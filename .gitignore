@@ -1,0 +1,11 @@
+# Archivos de datos operativos (no subir a GitHub)
+*.pdf
+*.xlsx
+*.xls
+*.csv
+
+# Entornos y temporales de Python
+__pycache__/
+*.pyc
+.vscode/
+venv/
