@@ -12,19 +12,51 @@ EXCEL_OUTPUT = "Lote_Produccion_Procesado.xlsx"
 EXCLUDED_KEYWORDS = ["DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle"]
 ALLOWED_EXCEPTIONS = ["WALL SIDE", "BASE SIDE", "BASE BOTTOM", "WALL BOTTOM", "OW BOTTOM", "DIVIDER","DWEP Universal Filler"]
 def extraer_caras(linea):
-    """Extrae el acabado con diagonal o el nombre de acabado tras la medida del tablero."""
-    # 1. Acabados con diagonal (ej. Fossil Grey/Fossil Grey, Maple/Maple, White/White)
-    match_slash = re.search(r'([A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)?\s*/\s*[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)?)', linea)
+    """Extrae el acabado con diagonal o el nombre tras la medida 4x8 / 5x8 del tablero."""
+    # Descartar líneas técnicas de ARDIS y encabezados de tabla
+    if any(k in linea.upper() for k in ["OPTIMIZER", "PAGE", "CUTTING", "DATA\\", "PART NO"]):
+        return None
+        
+    # Descartar piezas de corte (líneas que inician con número de partida)
+    if re.match(r'^\d+\s+[A-Za-z]', linea):
+        return None
+
+    # 1. Acabados con diagonal (ej. White/White, Fossil Grey/Fossil Grey)
+    match_slash = re.search(r'([A-Za-z][A-Za-z0-9_]*(?:\s+[A-Za-z0-9_]+)?\s*/\s*[A-Za-z][A-Za-z0-9_]*(?:\s+[A-Za-z0-9_]+)?)', linea)
     if match_slash:
         return match_slash.group(1).strip()
     
-    # 2. Acabados directos tras medida 4 X 8 o 5 X 8 (ej. Somerset 7)
-    match_dim = re.search(r'\d+\s*[Xx]\s*\d+\s+([A-Za-z0-9_ -]+?)(?:\s+\d+)?$', linea)
+    # 2. Acabados directos tras medida de tablero de 1 dígito en pies (ej. 4 X 8 o 5 X 8 Somerset)
+    match_dim = re.search(r'\b[45]\s*[Xx]\s*[89]\s+([A-Za-z][A-Za-z0-9_ -]+?)(?:\s+\d+)?$', linea)
     if match_dim:
         val = match_dim.group(1).strip()
         return re.sub(r'\b(RIP|- Shelf)\b', '', val, flags=re.IGNORECASE).strip()
     return None
 
+
+def formatear_faces(acabado):
+    """Convierte acabados a iniciales por palabra (ej. Fossil Grey/Fossil Grey -> FG/FG)."""
+    if not acabado or acabado == "SIN_ESPECIFICAR":
+        return "N/A"
+    
+    if "/" in acabado:
+        lados = acabado.split("/")
+        acronimos = []
+        for lado in lados:
+            # Extrae secuencias alfabéticas y toma la primera letra en mayúscula
+            palabras = re.findall(r'[A-Za-z]+', lado)
+            if palabras:
+                acronimos.append("".join(p[0].upper() for p in palabras))
+        # Solo unir con diagonal si se detectaron letras válidas en ambas caras
+        if len(acronimos) == 2:
+            return "/".join(acronimos)
+        elif len(acronimos) == 1:
+            return acronimos[0]
+        return "N/A"
+    
+    # En caso de una sola cara (ej. Somerset)
+    palabras = re.findall(r'[A-Za-z]+', acabado)
+    return "".join(p[0].upper() for p in palabras) if palabras else "N/A"
 def extraer_grosor(texto):
     """Detecta el calibre en milímetros dentro del texto de la pieza."""
     match = re.search(r'(\d+)\s*mm', texto, flags=re.IGNORECASE)
@@ -76,10 +108,13 @@ with pdfplumber.open(PDF_INPUT) as pdf:
             continue
             
         # Detectar el material/caras de la página (habitualmente en línea 2 o 3)
-        for l in lineas[:4]:
+        for l in lineas[:5]:
+            # Si topa con el encabezado de columnas o una pieza, la página es continuación: DETENER
+            if "PART NO" in l.upper() or patron_partida.match(l):
+                break           
             acabado = extraer_caras(l)
             if acabado and "CUTTING" not in acabado.upper() and "PAGE" not in acabado.upper():
-                caras_actual = acabado
+                caras_actual = formatear_faces(acabado)
                 break
                 
         # Parsear partidas de corte útiles
@@ -106,6 +141,7 @@ with pdfplumber.open(PDF_INPUT) as pdf:
                                     "L": length,
                                     "W": width,
                                     "Qty": qty,
+                                    "Faces": caras_actual,  # Guarda el acrónimo (ej. W/W o FG/FG)
                                     "Filtro": palabra_filtro.upper()
                                 })
                                 continue
@@ -123,7 +159,7 @@ with pdfplumber.open(PDF_INPUT) as pdf:
                     "L": length,
                     "W": width,
                     "Qty": qty,
-                    "Caras": caras_actual
+                    "Faces": caras_actual
                 })
 
 df = pd.DataFrame(filas_extraidas)
@@ -147,7 +183,7 @@ df = df.groupby("Unique", as_index=False).agg({
     "L": "first",
     "W": "first",
     "Qty": "sum",
-    "Caras": "first"
+    "Faces": "first"
 })
 
 # Orden multinivel: 1° Calibre ascendente (mm), 2° Alfabético por nombre simplificado
@@ -160,8 +196,8 @@ wb = Workbook()
 
 font_piso = Font(name="Calibri", size=14, bold=False)
 font_bold = Font(name="Calibri", size=14, bold=True)
-font_header = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
-fill_header = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+font_header = Font(name="Calibri", size=14, bold=True, color="000000")
+fill_header = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 
 # Borde estándar para datos
 border_delgado = Border(
@@ -186,6 +222,13 @@ border_corte_grosor = Border(
     top=Side(style='thin', color='D9D9D9'),
     bottom=Side(style='double', color='000000')
 )
+# Borde normal estándar visible (cuadrícula clásica de Excel)
+border_normal_visible = Border(
+    left=Side(style='thin', color='000000'),
+    right=Side(style='thin', color='000000'),
+    top=Side(style='thin', color='000000'),
+    bottom=Side(style='thin', color='000000')
+)
 # Relleno fijo para la columna ancla (Part No)
 fill_ancla = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 
@@ -195,7 +238,7 @@ fill_cebra = PatternFill(start_color="E5E5E5", end_color="E5E5E5", fill_type="so
 ws1 = wb.active
 ws1.title = "Catalogo_Lote"
 
-columnas_visibles = ["Unique", "Part No", "PartName", "L", "W", "T", "Qty"]
+columnas_visibles = ["Unique", "Part No", "PartName", "L", "W", "T", "Qty", "Faces"]
 ws1.append(columnas_visibles)
 
 for col_idx in range(1, len(columnas_visibles) + 1):
@@ -211,6 +254,8 @@ thickness_anterior = None
 filas_matriz = df[columnas_visibles].values.tolist()
 idx_t = columnas_visibles.index("T")
 idx_name = columnas_visibles.index("PartName") + 1
+idx_part_no = columnas_visibles.index("Part No") + 1
+idx_qty = columnas_visibles.index("Qty") + 1
 
 contador_bloque = 0
 
@@ -232,18 +277,32 @@ for r_idx, fila in enumerate(filas_matriz, start=2):
 # 3. Asignar línea inferior más marcada cada 5 registros
     borde_actual = border_cinco if (contador_bloque % 5 == 0) else border_delgado
     es_bloque_gris = ((contador_bloque - 1) // 5) % 2 == 1
+    es_centro = (contador_bloque % 5 == 3)
+    es_fila_gris = (not es_bloque_gris) if es_centro else es_bloque_gris
 
     # Bucle único: aplica bordes, sombreados y alineación
     for c_idx in range(1, len(columnas_visibles) + 1):
         cell = ws1.cell(row=r_idx, column=c_idx)
         cell.font = font_piso
         cell.border = borde_actual
+
+# 1. Bordes normales protegidos para Part No y Qty
+        if c_idx in [idx_part_no, idx_qty]:
+            cell.border = border_normal_visible
+        else:
+            cell.border = borde_actual
         
         # Sombreado: Gris fijo permanente en Part No (Columna 2), cebra en el resto
         if c_idx == 2:
             cell.fill = fill_ancla
         elif es_bloque_gris:
             cell.fill = fill_cebra
+
+# 2. Sombreado de fila corrida (incluye Part No y Qty)
+        if es_fila_gris:
+            cell.fill = fill_cebra
+        else:
+            cell.fill = PatternFill(fill_type=None)
             
         # Alineación: texto a la izquierda en PartName, centrado en el resto
         if c_idx == idx_name:
@@ -263,7 +322,8 @@ for r_idx, fila in enumerate(filas_matriz, start=2):
 
  #Borde inferior de cierre para la última fila de datos
 for c in range(1, len(columnas_visibles) + 1):
-   ws1.cell(row=len(filas_matriz) + 1, column=c).border = border_corte_grosor
+   if c not in [idx_part_no, idx_qty]:
+       ws1.cell(row=len(filas_matriz) + 1, column=c).border = border_corte_grosor
 ## Hoja 2: Recut_List
 ws2 = wb.create_sheet(title="Recut_List")
 
