@@ -9,7 +9,7 @@ PDF_INPUT = "Lote_Actual.pdf"
 EXCEL_OUTPUT = "Lote_Produccion_Procesado.xlsx"
 
 # Palabras clave para excluir departamentos ajenos
-EXCLUDED_KEYWORDS = ["DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle"]
+EXCLUDED_KEYWORDS = ["TKM","DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle"]
 ALLOWED_EXCEPTIONS = ["WALL SIDE", "BASE SIDE", "BASE BOTTOM", "WALL BOTTOM", "OW BOTTOM", "DIVIDER","DWEP Universal Filler"]
 def extraer_caras(linea):
     """Extrae el acabado con diagonal o el nombre tras la medida 4x8 / 5x8 del tablero."""
@@ -238,7 +238,7 @@ fill_cebra = PatternFill(start_color="E5E5E5", end_color="E5E5E5", fill_type="so
 ws1 = wb.active
 ws1.title = "Catalogo_Lote"
 
-columnas_visibles = ["Unique", "Part No", "PartName", "L", "W", "T", "Qty", "Faces"]
+columnas_visibles = ["Unique", "Part No", "PartName", "L", "W", "T", "Faces", "Qty"]
 ws1.append(columnas_visibles)
 
 for col_idx in range(1, len(columnas_visibles) + 1):
