@@ -9,7 +9,7 @@ PDF_INPUT = "Lote_Actual.pdf"
 EXCEL_OUTPUT = "Lote_Produccion_Procesado.xlsx"
 
 # Palabras clave para excluir departamentos ajenos
-EXCLUDED_KEYWORDS = ["TKM","DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle"]
+EXCLUDED_KEYWORDS = ["25mm","TKM","DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle"]
 ALLOWED_EXCEPTIONS = ["WALL SIDE", "BASE SIDE", "BASE BOTTOM", "WALL BOTTOM", "OW BOTTOM", "DIVIDER","DWEP Universal Filler"]
 def extraer_caras(linea):
     """Extrae el acabado con diagonal o el nombre tras la medida 4x8 / 5x8 del tablero."""
