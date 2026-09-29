@@ -4,12 +4,57 @@ import re
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.pagebreak import Break
+import datetime
+
+def obtener_color_por_fecha(texto_corrida):
+    """
+    Determina el color de etiqueta según el día hábil (L-V).
+    Patrón: Lunes=Azul, Martes=Rosa, Miércoles=Verde, Jueves=Naranja, Viernes=Morado.
+    """
+    colores_semana = {
+        0: "BLUE",
+        1: "PINK",     # 9-29 cae en Martes
+        2: "GREEN",    # 9-30 cae en Miércoles
+        3: "ORANGE",
+        4: "LAVANDER"
+    }
+    
+    # 1. Limpiar prefijos de corrida como 'r1-', 'r2-', 'R1_' para no confundir el número de corrida con el mes
+    texto_limpio = re.sub(r'^[A-Za-z]+\d*[-_]', '', str(texto_corrida).strip())
+    
+    # 2. Buscar patrón Mes-Día con Año opcional (ej. '9-30-26', '9-30-2026' o solo '9-30')
+    match = re.search(r'(\d{1,2})-(\d{1,2})(?:-(\d{2,4}))?', texto_limpio)
+    if match:
+        m = int(match.group(1))
+        d = int(match.group(2))
+        y_str = match.group(3)
+        
+        # Si no trae año en el nombre, tomar el año actual
+        if y_str:
+            y = int(y_str)
+            if y < 100:
+                y += 2000
+        else:
+            y = datetime.date.today().year
+            
+        try:
+            fecha_lote = datetime.date(y, m, d)
+            dia_sem = fecha_lote.weekday()
+            if dia_sem in colores_semana:
+                return colores_semana[dia_sem]
+        except ValueError:
+            pass
+            
+    # 3. Respaldo por defecto si no se pudo identificar la fecha
+    dia_actual = datetime.date.today().weekday()
+    return colores_semana.get(dia_actual, "Rosa")
 
 PDF_INPUT = "Lote_Actual.pdf"
 EXCEL_OUTPUT = "Lote_Produccion_Procesado.xlsx"
 
 # Palabras clave para excluir departamentos ajenos
-EXCLUDED_KEYWORDS = ["25mm","TKM","DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle"]
+EXCLUDED_KEYWORDS = ["25mm","Light Shield Molding","TKM","DOOR", "DRAWER", "TOEKICK", "Rip", "DWEP Panel_FF", "Shelf", "Overlay","FLTCROWN","Finished End","Universal Filler","Valance","Skin", "Baffle","P4896", "P34.5X96_1/4_FF"]
 ALLOWED_EXCEPTIONS = ["WALL SIDE", "BASE SIDE", "BASE BOTTOM", "WALL BOTTOM", "OW BOTTOM", "DIVIDER","DWEP Universal Filler"]
 def extraer_caras(linea):
     """Extrae el acabado con diagonal o el nombre tras la medida 4x8 / 5x8 del tablero."""
@@ -92,6 +137,7 @@ def simplificar_partname(nombre):
 filas_extraidas = []
 filas_omitidas = []
 caras_actual = "SIN_ESPECIFICAR"
+nombre_corrida = "LOTE_ACTUAL"  # <--- Valor por defecto de seguridad
 
 # Regex para partidas: [Part No] [PartName + Comodín D] [Length] [Width] [Qty]
 patron_partida = re.compile(
@@ -106,7 +152,13 @@ with pdfplumber.open(PDF_INPUT) as pdf:
         # Filtro Poka-Yoke: solo procesar páginas oficiales de corte
         if not any("PARTS_REVISED_NEW" in l.upper() for l in lineas[:3]):
             continue
-            
+    # Capturar la corrida de la cabecera si aún no se ha detectado
+        if nombre_corrida == "LOTE_ACTUAL":
+            for l in lineas[:3]:
+                match_c = re.search(r'Data\\([A-Za-z0-9_-]+)\.R\d+', l, flags=re.IGNORECASE)
+                if match_c:
+                    nombre_corrida = match_c.group(1)
+                    break
         # Detectar el material/caras de la página (habitualmente en línea 2 o 3)
         for l in lineas[:5]:
             # Si topa con el encabezado de columnas o una pieza, la página es continuación: DETENER
@@ -116,6 +168,9 @@ with pdfplumber.open(PDF_INPUT) as pdf:
             if acabado and "CUTTING" not in acabado.upper() and "PAGE" not in acabado.upper():
                 caras_actual = formatear_faces(acabado)
                 break
+
+            # Al terminar el parseo del PDF, calculamos el color correspondiente
+        color_lote = obtener_color_por_fecha(nombre_corrida)
                 
         # Parsear partidas de corte útiles
         for l in lineas:
@@ -146,9 +201,17 @@ with pdfplumber.open(PDF_INPUT) as pdf:
                                 })
                                 continue
                 
-                # Reglas de negocio de planta
                 thickness = extraer_grosor(part_name)
-                unique_key = f"{part_no}{thickness if thickness > 0 else ''}"
+                
+                # 1. Tomar el último dígito del espesor (ej. 19 -> '9', 16 -> '6', 13 -> '3')
+                thk_digito = str(thickness)[-1] if thickness > 0 else ""
+                
+                # 2. Tomar la primera letra mayúscula del nombre de la pieza
+                mayusculas = re.findall(r'[A-Z]', part_name)
+                primera_letra = mayusculas[0] if mayusculas else "X"
+                
+                # 3. Clave ultra compacta (ej. 40 + 9 + R = '409R')
+                unique_key = f"{part_no}{thk_digito}{primera_letra}"
                 
                 filas_extraidas.append({
                     "Unique": unique_key,
@@ -196,7 +259,7 @@ wb = Workbook()
 
 font_piso = Font(name="Calibri", size=14, bold=False)
 font_bold = Font(name="Calibri", size=14, bold=True)
-font_header = Font(name="Calibri", size=14, bold=True, color="000000")
+font_header = Font(name="Calibri", size=11, bold=True, color="000000")
 fill_header = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 
 # Borde estándar para datos
@@ -238,15 +301,26 @@ fill_cebra = PatternFill(start_color="E5E5E5", end_color="E5E5E5", fill_type="so
 ws1 = wb.active
 ws1.title = "Catalogo_Lote"
 
-columnas_visibles = ["Unique", "Part No", "PartName", "L", "W", "T", "Faces", "Qty"]
+columnas_visibles = ["Unique", "Part No","T", "PartName", "Faces", "L", "W", "Qty"]
 ws1.append(columnas_visibles)
 
+# Salto de línea para compactar la columna B
+idx_part_no = columnas_visibles.index("Part No") + 1
+ws1.cell(row=1, column=idx_part_no, value="Part\nNo.")
+
+# Formato de cabecera con wrap_text=True
 for col_idx in range(1, len(columnas_visibles) + 1):
     c = ws1.cell(row=1, column=col_idx)
     c.font = font_header
     c.fill = fill_header
-    c.alignment = Alignment(horizontal="center", vertical="center")
+    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+# Altura calibrada a 32 pt para alojar los 2 renglones en 14 pt
+ws1.row_dimensions[1].height = 32
+# Repetir la fila 1 de encabezados en la parte superior de cada hoja física
+ws1.print_title_rows = '1:1'
+ws1.oddHeader.left.text = f"&BOrder / Batch: {nombre_corrida}|  Color: {color_lote}&B"
+ws1.oddHeader.right.text = "Sheet &[Page] of &[Pages]"
 # Altura ergonómica de encabezado
 ws1.row_dimensions[1].height = 28
 
@@ -270,7 +344,8 @@ for r_idx, fila in enumerate(filas_matriz, start=2):
         for c in range(1, len(columnas_visibles) + 1):
             ws1.cell(row=r_idx - 1, column=c).border = border_corte_grosor
         contador_bloque = 0
-
+# Salto de página solicitado por Gloria:
+        ws1.row_breaks.append(Break(id=r_idx - 1))
     ws1.append(fila)
     contador_bloque += 1
     
@@ -329,7 +404,7 @@ ws2 = wb.create_sheet(title="Recut_List")
 
 
 meta = [
-    ("A3", "Fecha / Color Lote:", "B3", "9-15 Pink"),
+    ("A3", "Fecha / Color Lote:", "B3", nombre_corrida),
     ("D3", "Hora Entrega:", "E3", ""),
     ("A4", "Entregado a:", "B4", ""),
     ("D4", "Auditado por:", "E4", "Edwin Zarate")
@@ -367,16 +442,46 @@ r_sig = render_seccion(ws2, r_sig, "3. 'WANTED' (Pallets no localizados en piso)
 # AJUSTE DE ANCHOS CALIBRADO PARA FUENTE 14 PT
 # ------------------------------------------
 # Hoja 1: Catalogo_Lote
-for col in ws1.columns:
-    max_len = max(len(str(cell.value or '')) for cell in col)
-    col_letter = get_column_letter(col[0].column)
+#for col in ws1.columns:
+#    max_len = max(len(str(cell.value or '')) for cell in col)
+#    col_letter = get_column_letter(col[0].column)
     
-    if col_letter == 'C':  # PartName (Columna 3): factor 1.35x para evitar cortes
-        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.35) + 4, 55)
+#    if col_letter == 'C':  # PartName (Columna 3): factor 1.35x para evitar cortes
+#        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.35) + 4, 55)
+#    else:
+#        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.2) + 3, 10)
+# ------------------------------------------
+# AJUSTE DE ANCHOS ULTRA COMPACTO (MEDICIÓN DINÁMICA)
+# ------------------------------------------
+# Hoja 1: Catalogo_Lote (Ajuste dinámico calibrado para 14 pt)
+for col in ws1.columns:
+    col_letter = get_column_letter(col[0].column)
+    header_val = str(ws1.cell(row=1, column=col[0].column).value or '')
+    
+    # Medir la longitud máxima de línea por celda (ignora el acumulado de saltos de línea)
+    max_len = max(
+        max(len(line) for line in str(cell.value or '').split('\n'))
+        for cell in col
+    )
+    
+    if "PartName" in header_val:
+        # Dinamismo puro: escala proporcional a 14 pt sin cortes
+        ws1.column_dimensions[col_letter].width = int(max_len * 1.30) 
+    elif "Part" in header_val:
+        # Columna compacta gracias al salto Part / No.
+        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.2) + 3, 7.5)
+    elif "Qty" in header_val:
+        # Espacio suficiente para 3 dígitos con márgenes laterales limpios
+        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.2) + 4, 9)
+    elif header_val == "T":
+        # Calibre compacto
+        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.1) + 2, 5.5)
+    elif "Unique" in header_val:
+        # Espacio holgado para claves del tipo '4019-RFB' en 14 pt
+        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.1) + 1, 11)    
     else:
-        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.2) + 3, 10)
-
-# Hoja 2: Recut_List
+        # Columnas estándar (Unique, L, W, Faces)
+        ws1.column_dimensions[col_letter].width = max(int(max_len * 1.1) + 3, 7.5)
 for col in ws2.columns:
     max_len = max(len(str(cell.value or '')) for cell in col)
     col_letter = get_column_letter(col[0].column)
