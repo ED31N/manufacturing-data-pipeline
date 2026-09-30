@@ -6,7 +6,72 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.pagebreak import Break
 import datetime
-
+import os
+import io
+import win32com.client
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from pypdf import PdfReader, PdfWriter
+def generar_pdf_con_marca_de_agua(excel_path, nombre_corrida, color_lote):
+    """
+    Exporta 'Catalogo_Lote' a PDF y estampa el nombre del color en
+    blanco y negro a gran escala sobre filas blancas y cebra (over=True).
+    """
+    excel_abs = os.path.abspath(excel_path)
+    temp_pdf = os.path.abspath("temp_catalogo_base.pdf")
+    final_pdf = os.path.abspath(f"Catalogo_{nombre_corrida}_{color_lote}.pdf")
+    
+    # 1. Exportación nativa a PDF desde Excel COM
+    excel = win32com.client.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    try:
+        wb_com = excel.Workbooks.Open(excel_abs)
+        ws_com = wb_com.Worksheets("Catalogo_Lote")
+        ws_com.ExportAsFixedFormat(0, temp_pdf)
+        wb_com.Close(False)
+    finally:
+        excel.Quit()
+        
+    # 2. Generación del sello B&W de gran escala
+    packet = io.BytesIO()
+    can = canvas.Canvas(packet, pagesize=letter)
+    can.saveState()
+    
+    # Centro exacto de hoja Carta Portrait (612 x 792 pt)
+    can.translate(612 / 2.0, 792 / 2.0)
+    can.rotate(53)
+    
+    # Tipografía grande y monocromática (Negro con 9% de opacidad)
+    # Permite verse sobre la cebra gris #E5E5E5 sin interferir con la tinta de 14 pt
+    can.setFont("Helvetica-Bold", 115)
+    can.setFillColor(colors.Color(0.0, 0.0, 0.0, alpha=0.09))
+    can.drawCentredString(0, -15, str(color_lote).upper())
+    
+    can.restoreState()
+    can.save()
+    packet.seek(0)
+    
+    # 3. Fusión en capa superior para vencer los fondos opacos de Excel
+    watermark_pdf = PdfReader(packet)
+    watermark_page = watermark_pdf.pages[0]
+    
+    reader = PdfReader(temp_pdf)
+    writer = PdfWriter()
+    
+    for page in reader.pages:
+        # over=True proyecta la marca sobre celdas blancas y grises
+        page.merge_page(watermark_page, over=True)
+        writer.add_page(page)
+        
+    with open(final_pdf, "wb") as f_out:
+        writer.write(f_out)
+        
+    if os.path.exists(temp_pdf):
+        os.remove(temp_pdf)
+        
+    print(f"PDF generado exitosamente: '{final_pdf}' [B&W Grande - {color_lote}].")
 def obtener_color_por_fecha(texto_corrida):
     """
     Determina el color de etiqueta según el día hábil (L-V).
@@ -49,6 +114,7 @@ def obtener_color_por_fecha(texto_corrida):
     # 3. Respaldo por defecto si no se pudo identificar la fecha
     dia_actual = datetime.date.today().weekday()
     return colores_semana.get(dia_actual, "Rosa")
+
 
 PDF_INPUT = "Lote_Actual.pdf"
 EXCEL_OUTPUT = "Lote_Produccion_Procesado.xlsx"
@@ -286,12 +352,12 @@ border_corte_grosor = Border(
     bottom=Side(style='double', color='000000')
 )
 # Borde normal estándar visible (cuadrícula clásica de Excel)
+# Borde horizontal continuo para columnas ancla (sin paredes laterales)
 border_normal_visible = Border(
-    left=Side(style='thin', color='000000'),
-    right=Side(style='thin', color='000000'),
     top=Side(style='thin', color='000000'),
     bottom=Side(style='thin', color='000000')
 )
+
 # Relleno fijo para la columna ancla (Part No)
 fill_ancla = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 
@@ -301,7 +367,7 @@ fill_cebra = PatternFill(start_color="E5E5E5", end_color="E5E5E5", fill_type="so
 ws1 = wb.active
 ws1.title = "Catalogo_Lote"
 
-columnas_visibles = ["Unique", "Part No","T", "PartName", "Faces", "L", "W", "Qty"]
+columnas_visibles = ["Unique","T", "Part No", "PartName", "Faces", "L", "W", "Qty"]
 ws1.append(columnas_visibles)
 
 # Salto de línea para compactar la columna B
@@ -318,9 +384,34 @@ for col_idx in range(1, len(columnas_visibles) + 1):
 # Altura calibrada a 32 pt para alojar los 2 renglones en 14 pt
 ws1.row_dimensions[1].height = 32
 # Repetir la fila 1 de encabezados en la parte superior de cada hoja física
+# ==========================================
+# CONFIGURACIÓN DE PÁGINA E IMPRESIÓN (PORTRAIT)
+# ==========================================
+# 1. Repetir la fila 1 de encabezados en cada hoja física
 ws1.print_title_rows = '1:1'
-ws1.oddHeader.left.text = f"&BOrder / Batch: {nombre_corrida}|  Color: {color_lote}&B"
+
+# 2. Orientación vertical y tamaño de papel
+ws1.page_setup.paperSize = ws1.PAPERSIZE_LETTER
+ws1.page_setup.orientation = ws1.ORIENTATION_PORTRAIT
+
+# 3. Márgenes estrechos (0.3 in laterales para maximizar el ancho útil)
+ws1.page_margins.left = 0.25
+ws1.page_margins.right = 0.25
+ws1.page_margins.top = 0.4
+ws1.page_margins.bottom = 0.25
+ws1.page_margins.header = 0.2
+ws1.page_margins.footer = 0
+
+# 4. Forzar ajuste a 1 página de ancho (las filas fluyen libremente hacia abajo)
+ws1.sheet_properties.pageSetUpPr.fitToPage = True
+ws1.page_setup.fitToWidth = 1
+ws1.page_setup.fitToHeight = 0
+ws1.print_options.horizontalCentered = True
+
+# 5. Encabezado de impresión nativo
+ws1.oddHeader.left.text = f"&BOrder / Batch: {nombre_corrida}  |  Color: {color_lote}&B"
 ws1.oddHeader.right.text = "Sheet &[Page] of &[Pages]"
+
 # Altura ergonómica de encabezado
 ws1.row_dimensions[1].height = 28
 
@@ -399,6 +490,8 @@ for r_idx, fila in enumerate(filas_matriz, start=2):
 for c in range(1, len(columnas_visibles) + 1):
    if c not in [idx_part_no, idx_qty]:
        ws1.cell(row=len(filas_matriz) + 1, column=c).border = border_corte_grosor
+
+ws1.print_area = f"C1:H{ws1.max_row}"
 ## Hoja 2: Recut_List
 ws2 = wb.create_sheet(title="Recut_List")
 
@@ -540,3 +633,4 @@ for col_let, ancho in anchos_omitidos.items():
     ws3.column_dimensions[col_let].width = ancho
 wb.save(EXCEL_OUTPUT)
 print(f"Éxito: {len(df)} partidas procesadas y guardadas en '{EXCEL_OUTPUT}'.")
+generar_pdf_con_marca_de_agua(EXCEL_OUTPUT, nombre_corrida, color_lote)
